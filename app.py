@@ -1,28 +1,33 @@
 import streamlit as st
 import numpy as np
-import joblib
-
-# Load trained model
-model = joblib.load("rf_model_4_features.pkl")
-
 import pandas as pd
+import joblib
 import matplotlib.pyplot as plt
 
+# -----------------------------
+# Load trained model
+# -----------------------------
+model = joblib.load("rf_model_4_features.pkl")
 
+# -----------------------------
 # Page config
+# -----------------------------
 st.set_page_config(
     page_title="Employee Attrition Predictor",
     page_icon="📊",
     layout="centered"
 )
 
+# -----------------------------
 # Title
+# -----------------------------
 st.title("📊 Employee Attrition Prediction")
 st.caption("Predict attrition risk using machine learning")
-
 st.markdown("---")
 
+# -----------------------------
 # Input section
+# -----------------------------
 st.subheader("🧑‍💼 Employee Details")
 
 col1, col2 = st.columns(2)
@@ -35,12 +40,11 @@ with col2:
     monthly_income = st.number_input("Monthly Income", 1000, 200000, 30000)
     overtime = st.selectbox("OverTime", ["No", "Yes"])
 
-# Encode OverTime
 overtime = 1 if overtime == "Yes" else 0
 
-st.markdown("---")
-
-# Prediction
+# -----------------------------
+# What-if analysis
+# -----------------------------
 st.markdown("### 🔄 What-If Analysis")
 
 salary_change = st.slider(
@@ -54,16 +58,21 @@ salary_change = st.slider(
 adjusted_income = int(monthly_income * (1 + salary_change / 100))
 st.caption(f"Adjusted Monthly Income: ₹{adjusted_income}")
 
+st.markdown("---")
+
+# -----------------------------
+# Prediction (ONE BUTTON ONLY)
+# -----------------------------
 if st.button("🔍 Predict Attrition Risk"):
+
     input_data = np.array([[age, adjusted_income, years_at_company, overtime]])
 
-    # Probability of attrition
     proba = model.predict_proba(input_data)[0][1]
 
     st.subheader("📈 Prediction Result")
 
     risk_percent = int(proba * 100)
-    st.metric(label="Attrition Risk", value=f"{risk_percent} %")
+    st.metric("Attrition Risk", f"{risk_percent}%")
     st.progress(risk_percent)
 
     # Confidence
@@ -83,6 +92,34 @@ if st.button("🔍 Predict Attrition Risk"):
         st.warning("🟡 Medium Risk: Monitor and engage employee")
     else:
         st.success("🟢 Low Risk: Employee likely to stay")
+
+    # -----------------------------
+    # Download report
+    # -----------------------------
+    report_df = pd.DataFrame({
+        "Age": [age],
+        "Monthly Income": [adjusted_income],
+        "Years at Company": [years_at_company],
+        "OverTime": ["Yes" if overtime == 1 else "No"],
+        "Attrition Risk Probability": [round(proba, 2)]
+    })
+
+    csv = report_df.to_csv(index=False)
+
+    st.download_button(
+        "📥 Download Prediction Report",
+        csv,
+        "attrition_prediction_report.csv",
+        "text/csv"
+    )
+
+    st.caption(
+        "⚠️ Predictions are probabilistic and should be used as decision support, not final judgment."
+    )
+
+# -----------------------------
+# Feature importance
+# -----------------------------
 st.markdown("---")
 st.subheader("📊 Feature Importance")
 
@@ -101,66 +138,20 @@ ax.set_title("Feature Importance (Random Forest)")
 
 st.pyplot(fig)
 
-    # ---------- DOWNLOAD REPORT (INSIDE BLOCK) ----------
-if st.button("🔍 Predict Attrition Risk"):
-    input_data = np.array([[age, adjusted_income, years_at_company, overtime]])
-
-    # Predict probability
-    proba = model.predict_proba(input_data)[0][1]
-
-    st.subheader("📈 Prediction Result")
-
-    risk_percent = int(proba * 100)
-    st.metric(label="Attrition Risk", value=f"{risk_percent} %")
-    st.progress(risk_percent)
-
-    # Confidence logic
-    if proba < 0.25 or proba > 0.75:
-        confidence = "High"
-    elif proba < 0.4 or proba > 0.6:
-        confidence = "Medium"
-    else:
-        confidence = "Low"
-
-    st.caption(f"🔍 Model Confidence: **{confidence}**")
-
-    # Risk interpretation
-    if proba >= 0.6:
-        st.error("🔴 High Risk: Immediate HR attention recommended")
-    elif proba >= 0.35:
-        st.warning("🟡 Medium Risk: Monitor and engage employee")
-    else:
-        st.success("🟢 Low Risk: Employee likely to stay")
-
-    # -------- DOWNLOAD REPORT (INSIDE BLOCK) --------
-    report_df = pd.DataFrame({
-        "Age": [age],
-        "Monthly Income": [adjusted_income],
-        "Years at Company": [years_at_company],
-        "OverTime": ["Yes" if overtime == 1 else "No"],
-        "Attrition Risk Probability": [round(proba, 2)]
-    })
-
-    csv = report_df.to_csv(index=False)
-
-    st.download_button(
-        label="📥 Download Prediction Report",
-        data=csv,
-        file_name="attrition_prediction_report.csv",
-        mime="text/csv"
-    )
-
-    st.caption(
-        "⚠️ Predictions are probabilistic and should be used as decision support, not final judgment."
-    )
-
+# -----------------------------
+# Explanation
+# -----------------------------
 with st.expander("🧠 How is this prediction made?"):
     st.write("""
     - The model is trained on historical HR data.
     - It uses a Random Forest classifier.
-    - The output is a probability score, not a hard rule.
+    - The output is a probability score.
     - Higher probability indicates higher attrition risk.
     """)
+
+# -----------------------------
+# Batch prediction
+# -----------------------------
 st.markdown("---")
 st.subheader("📁 Batch Prediction (CSV Upload)")
 
@@ -168,13 +159,13 @@ uploaded_file = st.file_uploader("Upload employee CSV", type=["csv"])
 
 if uploaded_file:
     batch_df = pd.read_csv(uploaded_file)
-
     batch_df["OverTime"] = batch_df["OverTime"].map({"Yes": 1, "No": 0})
-
-    batch_predictions = model.predict_proba(batch_df)[:, 1]
-    batch_df["Attrition Risk"] = batch_predictions.round(2)
-
+    batch_df["Attrition Risk"] = model.predict_proba(batch_df)[:, 1].round(2)
     st.dataframe(batch_df)
+
+# -----------------------------
+# Feature explanation
+# -----------------------------
 with st.expander("ℹ️ Feature Explanation"):
     st.markdown("""
     - **Age**: Career stage indicator  
@@ -182,4 +173,3 @@ with st.expander("ℹ️ Feature Explanation"):
     - **Years at Company**: Employee loyalty & stability  
     - **OverTime**: Workload & burnout signal  
     """)
-
