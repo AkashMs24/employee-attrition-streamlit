@@ -102,7 +102,38 @@ ax.set_title("Feature Importance (Random Forest)")
 st.pyplot(fig)
 
     # ---------- DOWNLOAD REPORT (INSIDE BLOCK) ----------
-report_df = pd.DataFrame({
+if st.button("🔍 Predict Attrition Risk"):
+    input_data = np.array([[age, adjusted_income, years_at_company, overtime]])
+
+    # Predict probability
+    proba = model.predict_proba(input_data)[0][1]
+
+    st.subheader("📈 Prediction Result")
+
+    risk_percent = int(proba * 100)
+    st.metric(label="Attrition Risk", value=f"{risk_percent} %")
+    st.progress(risk_percent)
+
+    # Confidence logic
+    if proba < 0.25 or proba > 0.75:
+        confidence = "High"
+    elif proba < 0.4 or proba > 0.6:
+        confidence = "Medium"
+    else:
+        confidence = "Low"
+
+    st.caption(f"🔍 Model Confidence: **{confidence}**")
+
+    # Risk interpretation
+    if proba >= 0.6:
+        st.error("🔴 High Risk: Immediate HR attention recommended")
+    elif proba >= 0.35:
+        st.warning("🟡 Medium Risk: Monitor and engage employee")
+    else:
+        st.success("🟢 Low Risk: Employee likely to stay")
+
+    # -------- DOWNLOAD REPORT (INSIDE BLOCK) --------
+    report_df = pd.DataFrame({
         "Age": [age],
         "Monthly Income": [adjusted_income],
         "Years at Company": [years_at_company],
@@ -110,18 +141,19 @@ report_df = pd.DataFrame({
         "Attrition Risk Probability": [round(proba, 2)]
     })
 
-csv = report_df.to_csv(index=False)
+    csv = report_df.to_csv(index=False)
 
-st.download_button(
+    st.download_button(
         label="📥 Download Prediction Report",
         data=csv,
         file_name="attrition_prediction_report.csv",
         mime="text/csv"
     )
 
-st.caption(
+    st.caption(
         "⚠️ Predictions are probabilistic and should be used as decision support, not final judgment."
     )
+
 with st.expander("🧠 How is this prediction made?"):
     st.write("""
     - The model is trained on historical HR data.
@@ -150,3 +182,4 @@ with st.expander("ℹ️ Feature Explanation"):
     - **Years at Company**: Employee loyalty & stability  
     - **OverTime**: Workload & burnout signal  
     """)
+
