@@ -114,6 +114,66 @@ counterfactual_explainer = CounterfactualExplainer(model)
 FEATURE_NAMES = ['Age', 'Monthly Income', 'Years at Company', 'OverTime']
 
 # ============================================================================
+# HELPER: ROBUST FEATURE CLEANING FOR UPLOADED CSVs
+# ============================================================================
+
+def prepare_hr_features(df, feature_cols=('Age', 'MonthlyIncome', 'YearsAtCompany', 'OverTime')):
+    """
+    Validate and clean the 4 model features from an uploaded CSV.
+
+    - Checks the required columns exist at all (returns a clear error message if not).
+    - Coerces Age / MonthlyIncome / YearsAtCompany to numeric (strips commas/currency symbols).
+    - Maps OverTime (Yes/No, True/False, 1/0, various casing) to 0/1.
+    - Drops rows that still can't be made numeric after cleaning, rather than crashing.
+
+    Returns:
+        clean_df: DataFrame with only valid, fully-numeric rows for feature_cols
+        X: numpy float64 array of shape (n_valid_rows, 4), safe to pass to model.predict_proba
+        dropped_count: number of rows dropped due to bad/missing values
+        missing_cols: list of required columns not present in df at all (if any)
+    """
+    feature_cols = list(feature_cols)
+    missing_cols = [c for c in feature_cols if c not in df.columns]
+    if missing_cols:
+        return None, None, 0, missing_cols
+
+    df = df.copy()
+
+    # --- OverTime: handle Yes/No, True/False, 1/0, and stray whitespace/case ---
+    ot_map = {
+        'yes': 1, 'no': 0,
+        'true': 1, 'false': 0,
+        '1': 1, '0': 0,
+        1: 1, 0: 0, True: 1, False: 0
+    }
+    df['OverTime'] = (
+        df['OverTime']
+        .apply(lambda v: v.strip().lower() if isinstance(v, str) else v)
+        .map(ot_map)
+    )
+
+    # --- Numeric columns: strip commas/currency symbols/whitespace, coerce ---
+    for col in ['Age', 'MonthlyIncome', 'YearsAtCompany']:
+        df[col] = (
+            df[col]
+            .astype(str)
+            .str.replace(',', '', regex=False)
+            .str.replace('₹', '', regex=False)
+            .str.replace('$', '', regex=False)
+            .str.strip()
+        )
+        df[col] = pd.to_numeric(df[col], errors='coerce')
+
+    # --- Find rows that failed conversion in ANY required column ---
+    bad_mask = df[feature_cols].isna().any(axis=1)
+    dropped_count = int(bad_mask.sum())
+
+    clean_df = df.loc[~bad_mask].reset_index(drop=True)
+    X = clean_df[feature_cols].astype(float).values
+
+    return clean_df, X, dropped_count, []
+
+# ============================================================================
 # SIDEBAR NAVIGATION
 # ============================================================================
 
@@ -476,75 +536,83 @@ elif page == "💡 Interventions":
 
 elif page == "👥 Employee Segmentation":
     st.markdown('<div class="header-main">👥 Employee Risk Segmentation</div>', unsafe_allow_html=True)
-
+    
     st.info("Segment employees into clusters with similar risk profiles for targeted strategies")
-
-    REQUIRED_COLS_SEG = ['Age', 'MonthlyIncome', 'YearsAtCompany', 'OverTime']
-
+    
     # Upload CSV for batch analysis
     uploaded_file = st.file_uploader("Upload employee CSV for segmentation", type=['csv'])
-
+    
     if uploaded_file is not None:
         employees_df = pd.read_csv(uploaded_file)
-
+        
         st.success(f"Loaded {len(employees_df)} employees")
+        
+        if st.button("🔬 Segment Employees"):
+            clean_df, X_check, dropped_count, missing_cols = prepare_hr_features(employees_df)
 
-        # ---- Validate required columns exist BEFORE running anything ----
-        missing_cols = [c for c in REQUIRED_COLS_SEG if c not in employees_df.columns]
+            if missing_cols:
+                st.error(
+                    f"❌ This file is missing required column(s): **{', '.join(missing_cols)}**\n\n"
+                    f"This model expects **employee HR data** with these columns: "
+                    f"`Age, MonthlyIncome, YearsAtCompany, OverTime`.\n\n"
+                    f"Your file has these columns instead: `{', '.join(employees_df.columns.tolist())}`\n\n"
+                    f"💡 It looks like you may have uploaded a different dataset — please upload "
+                    f"an employee HR dataset (like the IBM HR Attrition dataset) that contains "
+                    f"`Age`, `MonthlyIncome`, `YearsAtCompany`, and `OverTime` columns."
+                )
+                with st.expander("📄 Preview of uploaded file"):
+                    st.dataframe(employees_df.head(), use_container_width=True)
+                st.stop()
 
-        if missing_cols:
-            st.error(
-                f"❌ This file is missing required column(s): **{', '.join(missing_cols)}**\n\n"
-                f"This model expects **employee HR data** with these columns: "
-                f"`{', '.join(REQUIRED_COLS_SEG)}`.\n\n"
-                f"Your file has these columns instead: `{', '.join(employees_df.columns.tolist())}`\n\n"
-                f"💡 It looks like you may have uploaded a different dataset "
-                f"(e.g. a job-postings file) — please upload an employee HR "
-                f"dataset (like the IBM HR Attrition dataset) that contains "
-                f"`Age`, `MonthlyIncome`, `YearsAtCompany`, and `OverTime` columns."
-            )
-            with st.expander("📄 Preview of uploaded file"):
-                st.dataframe(employees_df.head(), use_container_width=True)
-        else:
-            if st.button("🔬 Segment Employees"):
-                with st.spinner("Segmenting employees..."):
-                    try:
-                        segmented_df, clusters = risk_segmenter.segment_employees(employees_df, model)
-                    except Exception as e:
-                        st.error(f"❌ Segmentation failed: {e}")
-                        st.stop()
+            if dropped_count > 0:
+                st.warning(
+                    f"⚠️ Dropped {dropped_count} row(s) with missing/non-numeric "
+                    f"values in Age, MonthlyIncome, YearsAtCompany, or OverTime. "
+                    f"Proceeding with {len(clean_df)} valid rows."
+                )
 
-                # Display cluster summary
-                st.subheader("📊 Cluster Summary")
-                summary_df = risk_segmenter.get_cluster_summary(clusters)
-                st.dataframe(summary_df, use_container_width=True)
+            if len(clean_df) == 0:
+                st.error("❌ No valid rows remain after cleaning. Please check your CSV.")
+                st.stop()
 
-                # Visualize clusters
+            with st.spinner("Segmenting employees..."):
                 try:
-                    fig = risk_segmenter.visualize_clusters(segmented_df, clusters)
-                    st.pyplot(fig)
-                except Exception:
-                    st.info("Visualization not available")
-
-                # Detailed cluster information
-                st.subheader("📋 Cluster Recommendations")
-                for cluster_id, cluster_info in clusters.items():
-                    with st.expander(
-                        f"{cluster_info['name']} ({cluster_info['size']} employees)",
-                        expanded=cluster_id == 0
-                    ):
-                        st.write(f"**Description:** {cluster_info['description']}")
-                        st.write(f"**Primary Issue:** {cluster_info['primary_issue']}")
-                        st.write(f"**Recommendation:** {cluster_info['recommendation']}")
-
-                        if cluster_info['urgent_actions']:
-                            st.write("**Urgent Actions:**")
-                            for action in cluster_info['urgent_actions']:
-                                st.write(f"  • {action}")
-
-                        col_a, col_b = st.columns(2)
-                        col_a.metric("Avg Risk", f"{cluster_info['avg_risk']:.1%}")
-                        col_b.metric("Avg Income", f"₹{cluster_info['avg_income']:,.0f}")
+                    segmented_df, clusters = risk_segmenter.segment_employees(clean_df, model)
+                except Exception as e:
+                    st.error(f"❌ Segmentation failed: {e}")
+                    st.stop()
+            
+            # Display cluster summary
+            st.subheader("📊 Cluster Summary")
+            
+            summary_df = risk_segmenter.get_cluster_summary(clusters)
+            st.dataframe(summary_df, use_container_width=True)
+            
+            # Visualize clusters
+            try:
+                fig = risk_segmenter.visualize_clusters(segmented_df, clusters)
+                st.pyplot(fig)
+            except Exception:
+                st.info("Visualization not available")
+            
+            # Detailed cluster information
+            st.subheader("📋 Cluster Recommendations")
+            
+            for cluster_id, cluster_info in clusters.items():
+                with st.expander(f"{cluster_info['name']} ({cluster_info['size']} employees)", 
+                               expanded=cluster_id==0):
+                    st.write(f"**Description:** {cluster_info['description']}")
+                    st.write(f"**Primary Issue:** {cluster_info['primary_issue']}")
+                    st.write(f"**Recommendation:** {cluster_info['recommendation']}")
+                    
+                    if cluster_info['urgent_actions']:
+                        st.write("**Urgent Actions:**")
+                        for action in cluster_info['urgent_actions']:
+                            st.write(f"  • {action}")
+                    
+                    col_a, col_b = st.columns(2)
+                    col_a.metric("Avg Risk", f"{cluster_info['avg_risk']:.1%}")
+                    col_b.metric("Avg Income", f"₹{cluster_info['avg_income']:,.0f}")
 
 # ============================================================================
 # PAGE 6: FAIRNESS AUDIT
@@ -552,66 +620,65 @@ elif page == "👥 Employee Segmentation":
 
 elif page == "⚖️ Fairness Audit":
     st.markdown('<div class="header-main">⚖️ Fairness & Bias Audit</div>', unsafe_allow_html=True)
-
+    
     st.info("Ensure the model treats all demographic groups fairly")
-
-    REQUIRED_COLS_AUDIT = ['Age', 'MonthlyIncome', 'YearsAtCompany', 'OverTime']
-
+    
     # Upload data for fairness audit
     uploaded_file = st.file_uploader("Upload data for fairness audit", type=['csv'], key="fairness_upload")
-
+    
     if uploaded_file is not None:
         audit_df = pd.read_csv(uploaded_file)
-
-        # ---- Validate required columns exist BEFORE showing the selectbox/button ----
-        missing_cols = [c for c in REQUIRED_COLS_AUDIT if c not in audit_df.columns]
-
-        if missing_cols:
-            st.error(
-                f"❌ This file is missing required column(s): **{', '.join(missing_cols)}**\n\n"
-                f"This model expects **employee HR data** with these columns: "
-                f"`{', '.join(REQUIRED_COLS_AUDIT)}`.\n\n"
-                f"Your file has these columns instead: `{', '.join(audit_df.columns.tolist())}`\n\n"
-                f"💡 It looks like you may have uploaded a different dataset "
-                f"(e.g. a job-postings file) — please upload an employee HR "
-                f"dataset (like the IBM HR Attrition dataset) that contains "
-                f"`Age`, `MonthlyIncome`, `YearsAtCompany`, and `OverTime` columns."
-            )
-            with st.expander("📄 Preview of uploaded file"):
-                st.dataframe(audit_df.head(), use_container_width=True)
-            st.stop()
-
+        
         # Select demographic column
         demographic_col = st.selectbox("Select demographic column to audit", audit_df.columns)
-
+        
         if st.button("🔍 Run Fairness Audit"):
             st.markdown("### ⏳ Running audit...")
 
+            clean_df, X_audit, dropped_count, missing_cols = prepare_hr_features(audit_df)
+
+            if missing_cols:
+                st.error(
+                    f"❌ This file is missing required column(s): **{', '.join(missing_cols)}**\n\n"
+                    f"This model expects **employee HR data** with these columns: "
+                    f"`Age, MonthlyIncome, YearsAtCompany, OverTime`.\n\n"
+                    f"Your file has these columns instead: `{', '.join(audit_df.columns.tolist())}`\n\n"
+                    f"💡 It looks like you may have uploaded a different dataset — please upload "
+                    f"an employee HR dataset (like the IBM HR Attrition dataset) that contains "
+                    f"`Age`, `MonthlyIncome`, `YearsAtCompany`, and `OverTime` columns."
+                )
+                with st.expander("📄 Preview of uploaded file"):
+                    st.dataframe(audit_df.head(), use_container_width=True)
+                st.stop()
+
+            if dropped_count > 0:
+                st.warning(
+                    f"⚠️ Dropped {dropped_count} row(s) with missing/non-numeric "
+                    f"values in Age, MonthlyIncome, YearsAtCompany, or OverTime. "
+                    f"Proceeding with {len(clean_df)} valid rows."
+                )
+
+            if len(clean_df) == 0:
+                st.error("❌ No valid rows remain after cleaning. Please check your CSV.")
+                st.stop()
+
             try:
-                # Extract features
-                feature_cols = REQUIRED_COLS_AUDIT
-                X_audit = audit_df[feature_cols].copy()
-
-                # Convert OverTime if needed
-                if X_audit['OverTime'].dtype == 'object':
-                    X_audit['OverTime'] = (X_audit['OverTime'] == 'Yes').astype(int)
-
                 # Get audit results
                 audit_results = fairness_auditor.audit_by_demographic(
-                    X_audit.values,
-                    audit_df.get('Attrition', pd.Series([0] * len(audit_df))).values,
-                    audit_df,
+                    X_audit,
+                    clean_df.get('Attrition', pd.Series([0]*len(clean_df))).values,
+                    clean_df,
                     demographic_col
                 )
             except Exception as e:
                 st.error(f"❌ Audit failed: {e}")
                 st.stop()
-
+            
             st.success("✓ Audit complete")
-
+            
             # Display results by group
             st.subheader(f"Fairness Metrics by {demographic_col}")
-
+            
             results_table = []
             for group, metrics in audit_results.items():
                 results_table.append({
@@ -621,12 +688,12 @@ elif page == "⚖️ Fairness Audit":
                     'FNR': f"{metrics['false_negative_rate']:.2%}",
                     'Precision': f"{metrics['precision']:.2%}"
                 })
-
+            
             st.dataframe(pd.DataFrame(results_table), use_container_width=True)
-
+            
             # Bias detection
             bias_findings = fairness_auditor.detect_bias({demographic_col: audit_results})
-
+            
             if bias_findings:
                 st.warning("⚠️ Bias Detected")
                 for finding in bias_findings:
