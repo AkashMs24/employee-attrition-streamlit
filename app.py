@@ -117,6 +117,26 @@ FEATURE_NAMES = ['Age', 'Monthly Income', 'Years at Company', 'OverTime']
 # HELPER: ROBUST FEATURE CLEANING FOR UPLOADED CSVs
 # ============================================================================
 
+def encode_binary_labels(series):
+    """
+    Convert a column that may contain Yes/No, True/False, 1/0, or mixed
+    case/whitespace variants into clean numeric 0/1 (float, NaN for unparseable).
+    """
+    label_map = {
+        'yes': 1, 'no': 0,
+        'true': 1, 'false': 0,
+        '1': 1, '0': 0,
+        1: 1, 0: 0, True: 1, False: 0
+    }
+    cleaned = series.apply(lambda v: v.strip().lower() if isinstance(v, str) else v)
+    mapped = cleaned.map(label_map)
+    # Fall back to numeric coercion for anything not caught by the map (e.g. floats like 1.0)
+    still_missing = mapped.isna() & series.notna()
+    if still_missing.any():
+        mapped.loc[still_missing] = pd.to_numeric(series.loc[still_missing], errors='coerce')
+    return mapped
+
+
 def prepare_hr_features(df, feature_cols=('Age', 'MonthlyIncome', 'YearsAtCompany', 'OverTime')):
     """
     Validate and clean the 4 model features from an uploaded CSV.
@@ -140,17 +160,7 @@ def prepare_hr_features(df, feature_cols=('Age', 'MonthlyIncome', 'YearsAtCompan
     df = df.copy()
 
     # --- OverTime: handle Yes/No, True/False, 1/0, and stray whitespace/case ---
-    ot_map = {
-        'yes': 1, 'no': 0,
-        'true': 1, 'false': 0,
-        '1': 1, '0': 0,
-        1: 1, 0: 0, True: 1, False: 0
-    }
-    df['OverTime'] = (
-        df['OverTime']
-        .apply(lambda v: v.strip().lower() if isinstance(v, str) else v)
-        .map(ot_map)
-    )
+    df['OverTime'] = encode_binary_labels(df['OverTime'])
 
     # --- Numeric columns: strip commas/currency symbols/whitespace, coerce ---
     for col in ['Age', 'MonthlyIncome', 'YearsAtCompany']:
@@ -172,6 +182,22 @@ def prepare_hr_features(df, feature_cols=('Age', 'MonthlyIncome', 'YearsAtCompan
     X = clean_df[feature_cols].astype(float).values
 
     return clean_df, X, dropped_count, []
+
+
+def get_audit_labels(clean_df):
+    """
+    Build a clean 0/1 integer numpy array for the target column ('Attrition')
+    to use as y_true in fairness auditing. Handles Yes/No, True/False, 1/0.
+    Rows where Attrition can't be parsed are treated as 0 (non-attrition),
+    matching the previous default behavior, but a warning count is returned.
+    """
+    if 'Attrition' not in clean_df.columns:
+        return np.zeros(len(clean_df), dtype=int), 0
+
+    encoded = encode_binary_labels(clean_df['Attrition'])
+    unparseable = int(encoded.isna().sum())
+    encoded = encoded.fillna(0).astype(int)
+    return encoded.values, unparseable
 
 # ============================================================================
 # SIDEBAR NAVIGATION
@@ -663,10 +689,19 @@ elif page == "⚖️ Fairness Audit":
                 st.stop()
 
             try:
+                # Build clean 0/1 target labels (handles Yes/No, True/False, etc.)
+                y_audit, unparseable_labels = get_audit_labels(clean_df)
+
+                if unparseable_labels > 0:
+                    st.warning(
+                        f"⚠️ {unparseable_labels} row(s) had an unrecognized 'Attrition' "
+                        f"value and were treated as 'No' (0) for this audit."
+                    )
+
                 # Get audit results
                 audit_results = fairness_auditor.audit_by_demographic(
                     X_audit,
-                    clean_df.get('Attrition', pd.Series([0]*len(clean_df))).values,
+                    y_audit,
                     clean_df,
                     demographic_col
                 )
