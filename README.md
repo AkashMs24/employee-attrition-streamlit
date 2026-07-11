@@ -122,7 +122,7 @@ Rows with unrecoverable missing/invalid values in these columns are automaticall
 
 ## Research
 
-This project was developed as part of ongoing academic work and received acceptance at **ICDIA 2026**. Features have continued to expand post-submission — see commit history for the version corresponding to the original submission.
+This project was developed as part of ongoing academic work and received acceptance at **ICDIA 2026** and **COSMYS 2026**. Features have continued to expand post-submission — see commit history for the version corresponding to the original submission.
 
 ---
 
